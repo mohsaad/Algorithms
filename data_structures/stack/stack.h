@@ -61,6 +61,12 @@ class StackLL
         // add to the Stack
         void push(const T &obj);
 
+        // required for abstract class
+        void insert(const T &data);
+
+        // required for abstract class
+        T remove();
+
         // pop off the top of the stack
         T pop();
 
@@ -73,7 +79,14 @@ class StackLL
     private:
         class Node
         {
-            Node * next;
+            Node(T data)
+            {
+                this.data = data;
+            };
+
+            
+
+            Node* next;
             T data;
         };
 

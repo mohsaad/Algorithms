@@ -39,3 +39,32 @@ bool StackArray::isEmpty()
 {
     return size > 0 ? true : false;
 }
+
+// constructor does nothing
+template<class T>
+StackLL::Stack()
+{
+
+}
+
+// Destructor
+template<class T>
+StackLL::~Stack()
+{
+    T* current = head;
+    while(current != NULL)
+    {
+        current = head->next;
+        delete head;
+        head = current;
+    }
+
+    size = 0;
+}
+
+template<class T>
+StackLL::push(const T & data)
+{
+    Node* n = new Node(data);
+
+}
