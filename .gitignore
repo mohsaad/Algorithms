@@ -27,3 +27,7 @@
 *.exe
 *.out
 *.app
+
+machine_learning/large_files
+
+*.pyc
