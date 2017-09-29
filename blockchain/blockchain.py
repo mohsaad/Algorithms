@@ -6,6 +6,8 @@ from textwrap import dedent
 
 from flask import Flask, jsonify, request
 
+# sourced from: https://hackernoon.com/learn-blockchains-by-building-one-117428612f46
+
 class Blockchain(object):
     def __init__(self):
         self.chain = []
