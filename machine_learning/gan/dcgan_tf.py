@@ -1,11 +1,11 @@
 from __future__ import print_function, division
-from builtins import range, input
 
 import os
 import util
 import scipy as sp
 import numpy as np
-from matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
+import tensorflow as tf
 from datetime import datetime
 
 LEARNING_RATE = 0.0002
@@ -64,7 +64,7 @@ class ConvLayer:
         return self.f(conv_out)
 
 class FractionallyStridedConvLayer:
-    def __init__(self, name, mi, mo, output_shape, apply_batch_norm, filtersz  5, stride = 2, f = tf.nn.relu):
+    def __init__(self, name, mi, mo, output_shape, apply_batch_norm, filtersz = 5, stride = 2, f = tf.nn.relu):
         self.W = tf.get_variable(
             "W_%s" % name,
             shape = (filtersz, filtersz, mo, mi),
@@ -169,7 +169,7 @@ class DCGAN:
 
         with tf.variable_scope('generator') as scope:
             scope.reuse_variables()
-            sample_logits = self.d_forward(self.sample_images, True)
+            sample_logits = self.d_forward(self.sample_images, reuse = True)
 
         with tf.variable_scope("generator") as scope:
             scope.reuse_variables()
@@ -230,7 +230,7 @@ class DCGAN:
             count = 0
             for mo, filtersz, stride, apply_batch_norm in d_sizes['conv_layers']:
 
-                name = "convlayer_%s" $ count
+                name = "convlayer_%s" % count
                 count += 1
 
                 layer = ConvLayer(name, mi, mo, apply_batch_norm, filtersz, stride, lrelu)
@@ -268,7 +268,174 @@ class DCGAN:
         logits = self.d_finallayer.forward(output, reuse, is_training)
         return logits
 
-    
+    def build_generator(self, Z, g_sizes):
+        with tf.variable_scope('generator') as scope:
+            dims = [self.img_length]
+            dim = self.img_length
+            for _, _, stride, _ in reversed(g_sizes['conv_layers']):
+                dim = int(np.ceil(float(dim) / stride))
+                dims.append(dim)
+
+            dims = list(reversed(dims))
+            print("dims: ", dims)
+            self.g_dims = dims
+
+            mi = self.latent_dims
+            self.g_denselayers = []
+            count = 0
+
+            for mo, apply_batch_norm in g_sizes['dense_layers']:
+                name = "g_denselayers_%s" % count
+                count += 1
+
+                layer = DenseLayer(name, mi, mp, apply_batch_norm)
+                self.g_denselayers.append(layer)
+                mi = mo
+
+            mo = g_sizes['projection'] * dims[0] * dims[0]
+            name = "g_denselayer_%s" % count
+            layer = DenseLayer(name, mi, mo, not g_sizes['bn_after_project'])
+            self.g_denselayers.append(layer)
+
+            mi = g_sizes['projection']
+            self.g_convlayers = []
+
+            num_relus = len(g_sizes['conv_layers']) - 1
+            activation_functions = [tf.nn.relu] * num_relus + [g_sizes['output_activation']]
+
+            for i in range(len(g_sizes['conv_layers'])):
+                name = "fs_convlayer_%s" % i
+                mo, filtersz, stride, apply_batch_norm = g_sizes['conv_layers'][i]
+                f = activation_functions[i]
+                output_shape = [BATCH_SIZE, dims[i+1], dims[i+1], mo]
+                print("mi: ", mi, "mo: ", mo, "output_shape: ", output_shape)
+                layer = FractionallyStridedConvLayer(
+                    name, mi, mo, output_shape, apply_batch_norm, filtersz, stride, f
+                )
+                self.g_convlayers.append(layer)
+                mi = mo
+
+            self.g_sizes = g_sizes
+            return self.g_forward(Z)
+
+    def g_forward(self, Z, reuse = None, is_training = True):
+        output = Z
+        for layer in self.g_denselayers:
+            output = layer.forward(output, reuse, is_training)
+
+        output = tf.reshape(
+            output,
+            [-1, self.g_dims[0], self.g_dims[0], self.g_sizes['projection']]
+        )
+
+        # apply bnorm
+        if self.g_sizes['bn_after_project']:
+            output = tf.contrib.layers.batch_norm(
+                output,
+                decay = 0.9,
+                updates_collections = None,
+                epsilon=1e-5,
+                scale = True,
+                is_training = is_training,
+                reuse = reuse,
+                scope = 'bn_after_project'
+            )
+
+        for layer in self.g_convlayers:
+            output = layer.forward(output, reuse, is_training)
+
+        return output
+
+    def fit(self, X):
+        d_costs = []
+        g_costs = []
+
+        N = len(X)
+        n_batches = N // BATCH_SIZE
+        total_iters = 0
+        for i in range(0, EPOCHS):
+            print("epoch: ", i)
+            np.random.shuffle(X)
+
+            for j in range(0, n_batches):
+                t0 = datetime.now()
+
+                if(type(X[0]) is str):
+                    batch = util.files2images(
+                        X[j*BATCH_SIZE:((j+1)*BATCH_SIZE)]
+                    )
+
+                else:
+                    batch = X[j*BATCH_SIZE:(j+1)*BATCH_SIZE]
+
+                Z = np.random.uniform(-1, 1, size=(BATCH_SIZE, self.latent_dims))
+
+                _, d_cost, d_acc = self.sess.run(
+                    (self.d_train_op, self.d_cost, self.d_accuracy),
+                    feed_dict = {self.X: batch, self.Z: Z}
+                )
+                d_costs.append(d_cost)
+
+                _, g_cost1 = self.sess.run(
+                    (self.g_train_op, self.g_cost),
+                    feed_dict = {self.Z : Z}
+                )
+
+                _, g_cost2 = self.sess.run(
+                    (self.g_train_op, self.g_cost),
+                    feed_dict = {self.Z : Z}
+                )
+
+                g_costs.append((g_cost1 + g_cost2) / 2)
+
+                print("batch %d/%d - dt: %s - d_acc: %.2f" % (j+1, n_batches, datetime.now() - t0))
+
+                total_iters += 1
+                if total_iters % SAVE_SAMPLE_PERIOD == 0:
+                    print("saving sample...")
+                    samples = self.sample(64)
+
+                    d = self.img_length
+
+                    if samples.shape[-1] == 1:
+                        samples = samples.reshape(64, d, d)
+                        flat_image = np.empty((8*d, 8*d))
+
+                        k = 0
+                        for a in range(0, 8):
+                            for b in range(0, 8):
+                                flat_image[a*d:(a+1)*d, b*d:(b+1)*d] = samples[k].reshape(d,d)
+                                k+=1
+
+                    else:
+                        flat_image = np.empty((8*d, 8*d, 3))
+                        k = 0
+                        for a in range(0, 8):
+                            for b in range(0, 8):
+                                flat_image[a*d:(a+1)*d, b*d:(b+1)*d] = samples[k]
+                                k+=1
+
+                    sp.misc.imsave(
+                        'samples/samples_at_iter_%d.png' % total_iters,
+                        (flat_image + 1) / 2
+                    )
+
+        plt.clf()
+        plt.plot(d_costs, label = 'discriminator cost')
+        plt.plot(g_costs, label = 'generator cost')
+        plt.legend()
+        plt.savefig('cost_vs_iteration.png')
+
+    def sample(self, n):
+        Z = np.random.uniform(-1, 1, size = (n, self.latent_dims))
+        samples = self.sess.run(self.sample_images_test, feed_dict = {self.Z : Z})
+        return samples
+
+
+
+
+
+
 def celeb():
     X = util.get_celeb()
 
@@ -310,8 +477,8 @@ def mnist():
     dim = X.shape[1]
     colors = X.shape[-1]
 
-    d+sizes = {
-        'conv_layers': [(2, 5, 2, False), (64, 5, 2, True)]
+    d_sizes = {
+        'conv_layers': [(2, 5, 2, False), (64, 5, 2, True)],
         'dense_layers': [(1024, True)]
 
     }
@@ -328,3 +495,6 @@ def mnist():
 
     gan = DCGAN(dim, colors, d_sizes, g_sizes)
     gan.fit(X)
+
+if __name__ == '__main__':
+    mnist()
